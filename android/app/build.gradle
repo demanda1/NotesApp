@@ -66,7 +66,7 @@ react {
 /**
  * Set this to true to Run Proguard on Release builds to minify the Java bytecode.
  */
-def enableProguardInReleaseBuilds = (findProperty('android.enableProguardInReleaseBuilds') ?: true).toBoolean()
+def enableProguardInReleaseBuilds = (findProperty('android.enableProguardInReleaseBuilds') ?: false).toBoolean()
 
 /**
  * The preferred build flavor of JavaScriptCore (JSC)
@@ -87,13 +87,13 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace 'com.notesapp.notesapp'
+    namespace 'com.demandapps.notesapp'
     defaultConfig {
-        applicationId 'com.notesapp.notesapp'
+        applicationId 'com.demandapps.notesapp'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0.0"
+        versionCode 3
+        versionName "1.0.2"
     }
     signingConfigs {
         debug {
@@ -103,10 +103,10 @@ android {
             keyPassword 'android'
         }
         release {
-            storeFile file('demandapps-release-key.keystore')
-            storePassword System.getenv('RELEASE_STORE_PASSWORD') ?: 'demandapps2024'
-            keyAlias System.getenv('RELEASE_KEY_ALIAS') ?: 'demandapps'
-            keyPassword System.getenv('RELEASE_KEY_PASSWORD') ?: 'demandapps2024'
+            storeFile file('notesapp-release-key.keystore')
+            storePassword 'notesapp2024'
+            keyAlias 'notesapp-release'
+            keyPassword 'notesapp2024'
         }
     }
     buildTypes {
@@ -114,9 +114,9 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
-            // Using proper release keystore for production builds
+            // Using proper release keystore for production signing
             signingConfig signingConfigs.release
-            shrinkResources (findProperty('android.enableShrinkResourcesInReleaseBuilds')?.toBoolean() ?: true)
+            shrinkResources (findProperty('android.enableShrinkResourcesInReleaseBuilds')?.toBoolean() ?: false)
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
             crunchPngs (findProperty('android.enablePngCrunchInReleaseBuilds')?.toBoolean() ?: true)

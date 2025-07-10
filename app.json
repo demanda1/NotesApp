@@ -17,7 +17,7 @@
     "scheme": "notesapp",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.notesapp.notesapp",
+      "bundleIdentifier": "com.demandapps.notesapp",
       "infoPlist": {
         "NSDocumentsFolderUsageDescription": "This app needs access to documents folder to manage notes and files.",
         "NSDownloadsFolderUsageDescription": "This app needs access to downloads folder to save and export notes."
@@ -29,7 +29,7 @@
         "backgroundColor": "#6366f1"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.notesapp.notesapp",
+      "package": "com.demandapps.notesapp",
       "compileSdkVersion": 35,
       "targetSdkVersion": 35,
       "buildToolsVersion": "35.0.0",
