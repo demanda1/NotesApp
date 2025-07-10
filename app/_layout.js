@@ -35,36 +35,6 @@ export default function RootLayout() {
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
             <Stack.Screen name="settings" options={{ headerShown: false }} />
-            <Stack.Screen 
-              name="add-note" 
-              options={{ 
-                title: 'Add Note',
-                headerShown: true,
-                headerStyle: {
-                  backgroundColor: '#6366f1',
-                },
-                headerTintColor: '#fff',
-                headerTitleStyle: {
-                  fontWeight: 'bold',
-                },
-                presentation: 'modal',
-              }} 
-            />
-            <Stack.Screen 
-              name="edit-note/[id]" 
-              options={{ 
-                title: 'Edit Note',
-                headerShown: true,
-                headerStyle: {
-                  backgroundColor: '#6366f1',
-                },
-                headerTintColor: '#fff',
-                headerTitleStyle: {
-                  fontWeight: 'bold',
-                },
-                presentation: 'modal',
-              }} 
-            />
           </Stack>
         )}
         

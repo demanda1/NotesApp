@@ -14,6 +14,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  Keyboard,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, router } from 'expo-router';
@@ -27,7 +28,7 @@ const SIDEBAR_WIDTH = width * 0.75;
 export default function NotesScreen() {
   const { notebookId, chapterId } = useLocalSearchParams();
   const [searchQuery, setSearchQuery] = useState('');
-  const [rightSidebarVisible, setRightSidebarVisible] = useState(false);
+
   const [createNoteModalVisible, setCreateNoteModalVisible] = useState(false);
   const [notes, setNotes] = useState([]);
   const [chapter, setChapter] = useState(null);
@@ -58,6 +59,11 @@ export default function NotesScreen() {
   const contentInputRef = useRef(null);
   const [isEditingContent, setIsEditingContent] = useState(false);
   
+  // Keyboard handling
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const scrollViewRef = useRef(null);
+  
   // Animation values
   const rightSlideAnim = useRef(new Animated.Value(SIDEBAR_WIDTH)).current;
   const overlayOpacity = useRef(new Animated.Value(0)).current;
@@ -67,6 +73,29 @@ export default function NotesScreen() {
   useEffect(() => {
     loadChapterAndNotes();
   }, [notebookId, chapterId]);
+
+  // Keyboard event listeners
+  useEffect(() => {
+    const keyboardDidShowListener = Keyboard.addListener('keyboardDidShow', (event) => {
+      setKeyboardHeight(event.endCoordinates.height);
+      setIsKeyboardVisible(true);
+      
+      // Auto-scroll to bottom when keyboard appears
+      setTimeout(() => {
+        scrollViewRef.current?.scrollToEnd({ animated: true });
+      }, 100);
+    });
+
+    const keyboardDidHideListener = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardHeight(0);
+      setIsKeyboardVisible(false);
+    });
+
+    return () => {
+      keyboardDidShowListener.remove();
+      keyboardDidHideListener.remove();
+    };
+  }, []);
 
   const loadChapterAndNotes = async () => {
     try {
@@ -420,46 +449,7 @@ export default function NotesScreen() {
     setSearchQuery('');
   };
 
-  const slideInRight = () => {
-    setRightSidebarVisible(true);
-    Animated.parallel([
-      Animated.timing(rightSlideAnim, {
-        toValue: 0,
-        duration: 300,
-        useNativeDriver: true,
-      }),
-      Animated.timing(overlayOpacity, {
-        toValue: 1,
-        duration: 300,
-        useNativeDriver: true,
-      }),
-    ]).start();
-  };
 
-  const slideOut = () => {
-    Animated.parallel([
-      Animated.timing(rightSlideAnim, {
-        toValue: SIDEBAR_WIDTH,
-        duration: 300,
-        useNativeDriver: true,
-      }),
-      Animated.timing(overlayOpacity, {
-        toValue: 0,
-        duration: 300,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      setRightSidebarVisible(false);
-    });
-  };
-
-  const handleKebabMenu = () => {
-    slideInRight();
-  };
-
-  const closeSidebars = () => {
-    slideOut();
-  };
 
   const filteredNotes = notes.filter(note =>
     (note.title && note.title.toLowerCase().includes(searchQuery.toLowerCase())) ||
@@ -627,7 +617,7 @@ export default function NotesScreen() {
     setIsReaderMode(!isReaderMode);
   };
 
-  // Helper function to parse content into chat paragraphs
+  // Helper function to parse content into chat editor paragraphs
   const parseContentToParagraphs = (content) => {
     if (!content || content.trim() === '') return [];
     
@@ -847,12 +837,7 @@ export default function NotesScreen() {
             </Text>
           </View>
           
-          <TouchableOpacity 
-            style={styles.menuButton}
-            onPress={handleKebabMenu}
-          >
-            <Ionicons name="ellipsis-vertical-outline" size={24} color="#fff" />
-          </TouchableOpacity>
+          <View style={styles.headerSpacer} />
         </View>
         
         {/* Search Bar */}
@@ -905,51 +890,7 @@ export default function NotesScreen() {
         <Ionicons name="add" size={28} color="#fff" />
       </TouchableOpacity>
 
-      {/* Animated Overlay and Sidebars */}
-      {rightSidebarVisible && (
-        <View style={styles.modalContainer}>
-          <Animated.View 
-            style={[
-              styles.modalBackground,
-              { opacity: overlayOpacity }
-            ]}
-          >
-            <TouchableOpacity 
-              style={styles.overlayTouchable}
-              onPress={closeSidebars}
-              activeOpacity={1}
-            />
-          </Animated.View>
 
-          <Animated.View 
-            style={[
-              styles.rightSidebar,
-              { transform: [{ translateX: rightSlideAnim }] }
-            ]}
-          >
-            <View style={[styles.sidebarHeader, { paddingTop: insets.top + 20 }]}>
-              <Text style={styles.sidebarTitle}>Options</Text>
-              <TouchableOpacity onPress={closeSidebars} style={styles.closeButton}>
-                <Ionicons name="close" size={24} color="#1f2937" />
-              </TouchableOpacity>
-            </View>
-            
-            <View style={styles.sidebarContent}>
-              <TouchableOpacity style={styles.sidebarItem}>
-                <Ionicons name="calendar-outline" size={20} color="#6366f1" />
-                <Text style={styles.sidebarItemText}>Sort by Date</Text>
-                <Ionicons name="chevron-forward" size={16} color="#9ca3af" />
-              </TouchableOpacity>
-              
-              <TouchableOpacity style={styles.sidebarItem}>
-                <Ionicons name="filter-outline" size={20} color="#6366f1" />
-                <Text style={styles.sidebarItemText}>Filter Notes</Text>
-                <Ionicons name="chevron-forward" size={16} color="#9ca3af" />
-              </TouchableOpacity>
-            </View>
-          </Animated.View>
-        </View>
-      )}
 
       {/* Rich Text Editor Modal */}
       <Modal
@@ -957,86 +898,98 @@ export default function NotesScreen() {
         animationType="slide"
         presentationStyle="fullScreen"
       >
-        <KeyboardAvoidingView 
-          style={styles.editorContainer}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        >
+        <View style={styles.editorContainer}>
           <StatusBar barStyle="light-content" backgroundColor="#6366f1" />
           
-          {/* Header */}
-          <View style={[styles.editorHeader, { paddingTop: insets.top }]}>
-            <View style={styles.editorHeaderContent}>
+          {/* Scrollable Upper Section */}
+          <ScrollView 
+            ref={scrollViewRef}
+            style={[
+              styles.editorScrollView,
+              {
+                maxHeight: isKeyboardVisible 
+                  ? Math.max(200, height - keyboardHeight - 300) // Reserve more space for content editor
+                  : height - 350 // Reserve space for toolbar and content editor
+              }
+            ]}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            {/* Header */}
+            <View style={[styles.editorHeader, { paddingTop: insets.top }]}>
+              <View style={styles.editorHeaderContent}>
+                <TouchableOpacity 
+                  onPress={() => setCreateNoteModalVisible(false)} 
+                  style={styles.closeModalButton}
+                >
+                  <Ionicons name="arrow-back" size={24} color="#fff" />
+                </TouchableOpacity>
+                <Text style={styles.editorTitle}>{isEditMode ? 'Edit Note' : 'Create Note'}</Text>
+                <TouchableOpacity 
+                  onPress={createNote}
+                  style={styles.saveButton}
+                >
+                  <Text style={styles.saveButtonText}>{isEditMode ? 'Update' : 'Save'}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Note Title */}
+            <View style={styles.titleSection}>
+              <TextInput
+                style={styles.titleInput}
+                value={noteTitle}
+                onChangeText={setNoteTitle}
+                placeholder="Note title..."
+                placeholderTextColor="#9ca3af"
+                maxLength={100}
+              />
+            </View>
+
+            {/* Tags & Priority Button */}
+            <View style={styles.tagsSection}>
               <TouchableOpacity 
-                onPress={() => setCreateNoteModalVisible(false)} 
-                style={styles.closeModalButton}
+                style={styles.tagsButton}
+                onPress={() => setTagModalVisible(true)}
               >
-                <Ionicons name="arrow-back" size={24} color="#fff" />
-              </TouchableOpacity>
-              <Text style={styles.editorTitle}>{isEditMode ? 'Edit Note' : 'Create Note'}</Text>
-              <TouchableOpacity 
-                onPress={createNote}
-                style={styles.saveButton}
-              >
-                <Text style={styles.saveButtonText}>{isEditMode ? 'Update' : 'Save'}</Text>
+                <View style={styles.tagsButtonContent}>
+                  <Ionicons name="pricetag-outline" size={20} color="#6366f1" />
+                  <Text style={styles.tagsButtonText}>
+                    {(noteTag1 || noteTag2) ? 
+                      `Tags: ${[noteTag1, noteTag2].filter(tag => tag).join(', ')} • ${notePriority}` : 
+                      `Add Tags & Priority • ${notePriority}`
+                    }
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="#9ca3af" />
               </TouchableOpacity>
             </View>
-          </View>
+          </ScrollView>
 
-          {/* Note Title */}
-          <View style={styles.titleSection}>
-            <TextInput
-              style={styles.titleInput}
-              value={noteTitle}
-              onChangeText={setNoteTitle}
-              placeholder="Note title..."
-              placeholderTextColor="#9ca3af"
-              maxLength={100}
-            />
-          </View>
-
-          {/* Tags & Priority Button */}
-          <View style={styles.tagsSection}>
-            <TouchableOpacity 
-              style={styles.tagsButton}
-              onPress={() => setTagModalVisible(true)}
-            >
-              <View style={styles.tagsButtonContent}>
-                <Ionicons name="pricetag-outline" size={20} color="#6366f1" />
-                <Text style={styles.tagsButtonText}>
-                  {(noteTag1 || noteTag2) ? 
-                    `Tags: ${[noteTag1, noteTag2].filter(tag => tag).join(', ')} • ${notePriority}` : 
-                    `Add Tags & Priority • ${notePriority}`
-                  }
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color="#9ca3af" />
-            </TouchableOpacity>
-          </View>
-
-          {/* Formatting Toolbar */}
+          {/* Fixed Formatting Toolbar */}
           <View style={styles.toolbar}>
             <Text style={styles.toolbarHint}>Select text and tap formatting buttons, or type **bold**, *italic*, __underline__. Formatting shows instantly!</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.toolbarContent}>
               <TouchableOpacity 
-                style={[styles.toolbarButton, currentFormatting.bold && styles.toolbarButtonActive]}
+                style={[styles.toolbarButton, isBold && styles.toolbarButtonActive]}
                 onPress={() => applyFormatting('bold')}
               >
-                <Ionicons name="text" size={20} color={currentFormatting.bold ? "#fff" : "#6366f1"} />
-                <Text style={[styles.toolbarButtonText, currentFormatting.bold && styles.toolbarButtonTextActive]}>B</Text>
+                <Ionicons name="text" size={20} color={isBold ? "#fff" : "#6366f1"} />
+                <Text style={[styles.toolbarButtonText, isBold && styles.toolbarButtonTextActive]}>B</Text>
               </TouchableOpacity>
               
               <TouchableOpacity 
-                style={[styles.toolbarButton, currentFormatting.italic && styles.toolbarButtonActive]}
+                style={[styles.toolbarButton, isItalic && styles.toolbarButtonActive]}
                 onPress={() => applyFormatting('italic')}
               >
-                <Text style={[styles.toolbarButtonTextItalic, currentFormatting.italic && styles.toolbarButtonTextActive]}>I</Text>
+                <Text style={[styles.toolbarButtonTextItalic, isItalic && styles.toolbarButtonTextActive]}>I</Text>
               </TouchableOpacity>
               
               <TouchableOpacity 
-                style={[styles.toolbarButton, currentFormatting.underline && styles.toolbarButtonActive]}
+                style={[styles.toolbarButton, isUnderline && styles.toolbarButtonActive]}
                 onPress={() => applyFormatting('underline')}
               >
-                <Text style={[styles.toolbarButtonTextUnderline, currentFormatting.underline && styles.toolbarButtonTextActive]}>U</Text>
+                <Text style={[styles.toolbarButtonTextUnderline, isUnderline && styles.toolbarButtonTextActive]}>U</Text>
               </TouchableOpacity>
               
               <View style={styles.toolbarDivider} />
@@ -1080,14 +1033,22 @@ export default function NotesScreen() {
             </ScrollView>
           </View>
 
-          {/* Content Editor */}
-          <View style={styles.editorContent}>
+          {/* Content Editor - Takes remaining space */}
+          <View style={[
+            styles.editorContent,
+            {
+              flex: 1,
+              minHeight: isKeyboardVisible ? 150 : 200, // Ensure minimum usable height
+            }
+          ]}>
             {isEditingContent ? (
               <TextInput
                 style={[
                   styles.contentInput,
                   {
                     textAlign: textAlign,
+                    flex: 1,
+                    minHeight: isKeyboardVisible ? 150 : 200, // Ensure text input has minimum height
                   }
                 ]}
                 value={noteContent}
@@ -1096,6 +1057,12 @@ export default function NotesScreen() {
                   const { start, end } = event.nativeEvent.selection;
                   setSelectionStart(start);
                   setSelectionEnd(end);
+                }}
+                onFocus={() => {
+                  // Scroll to bottom when content editor gets focus
+                  setTimeout(() => {
+                    scrollViewRef.current?.scrollToEnd({ animated: true });
+                  }, 100);
                 }}
                 onBlur={() => setIsEditingContent(false)}
                 placeholder="Start writing your note... (Use **bold**, *italic*, __underline__)"
@@ -1128,7 +1095,7 @@ export default function NotesScreen() {
               </TouchableOpacity>
             )}
           </View>
-        </KeyboardAvoidingView>
+        </View>
       </Modal>
 
       {/* Tags & Priority Modal */}
@@ -1296,7 +1263,7 @@ export default function NotesScreen() {
                   color={!isReaderMode ? "#fff" : "#6366f1"} 
                 />
                 <Text style={[styles.toggleText, !isReaderMode && styles.toggleTextActive]}>
-                  Chat
+                  Chat Editor
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1322,7 +1289,7 @@ export default function NotesScreen() {
               </View>
             </ScrollView>
           ) : (
-            /* Chat Mode View */
+            /* Chat Editor Mode View */
             <>
               <FlatList
                 style={styles.chatMessages}
@@ -1353,14 +1320,14 @@ export default function NotesScreen() {
                 )}
               />
 
-              {/* Chat Input - Only show in chat mode */}
+              {/* Chat Editor Input - Only show in chat editor mode */}
               <View style={styles.chatInputContainer}>
                 <View style={styles.chatInputWrapper}>
                   <TextInput
                     style={styles.chatInput}
                     value={newMessage}
                     onChangeText={setNewMessage}
-                    placeholder="Type a message..."
+                    placeholder="Type a message in chat editor..."
                     placeholderTextColor="#9ca3af"
                     multiline
                     maxLength={500}
@@ -2333,5 +2300,133 @@ const styles = StyleSheet.create({
   priorityOptionTextSelected: {
     color: '#6366f1',
     fontWeight: '600',
+  },
+  // Editor scroll view for keyboard handling
+  editorScrollView: {
+    flex: 1,
+  },
+  // Editor container styles
+  editorContainer: {
+    flex: 1,
+    backgroundColor: '#f8fafc',
+  },
+  editorContent: {
+    backgroundColor: '#fff',
+    margin: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  contentInput: {
+    fontSize: 16,
+    color: '#1f2937',
+    padding: 16,
+    textAlignVertical: 'top',
+  },
+  // Editor header styles
+  editorHeader: {
+    backgroundColor: '#6366f1',
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+  },
+  editorHeaderContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  editorTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#fff',
+    flex: 1,
+    textAlign: 'center',
+  },
+  closeModalButton: {
+    padding: 8,
+    borderRadius: 8,
+  },
+  saveButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  saveButtonText: {
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  // Title and tags sections
+  titleSection: {
+    padding: 16,
+    paddingBottom: 8,
+  },
+  titleInput: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#1f2937',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e7eb',
+    paddingVertical: 12,
+  },
+  tagsSection: {
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  // Toolbar styles
+  toolbar: {
+    backgroundColor: '#fff',
+    borderTopWidth: 1,
+    borderTopColor: '#e5e7eb',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
+  toolbarContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  toolbarButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginHorizontal: 4,
+    borderRadius: 20,
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  toolbarButtonActive: {
+    backgroundColor: '#6366f1',
+    borderColor: '#6366f1',
+  },
+  toolbarButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#6366f1',
+    marginLeft: 4,
+  },
+  toolbarButtonTextActive: {
+    color: '#fff',
+  },
+  toolbarButtonTextItalic: {
+    fontSize: 16,
+    fontWeight: '600',
+    fontStyle: 'italic',
+    color: '#6366f1',
+  },
+  toolbarButtonTextUnderline: {
+    fontSize: 14,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
+    color: '#6366f1',
+  },
+  toolbarDivider: {
+    width: 1,
+    height: 20,
+    backgroundColor: '#e5e7eb',
+    marginHorizontal: 8,
   },
 }); 

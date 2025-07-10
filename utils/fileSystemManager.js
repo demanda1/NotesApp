@@ -3,6 +3,152 @@ import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
 import { Platform, Alert } from 'react-native';
 
+// Production Error Handling Utility
+class FileSystemError extends Error {
+  constructor(message, code, isRecoverable = true) {
+    super(message);
+    this.name = 'FileSystemError';
+    this.code = code;
+    this.isRecoverable = isRecoverable;
+    this.timestamp = new Date().toISOString();
+  }
+}
+
+class ErrorHandler {
+  static async withRetry(operation, maxRetries = 3, delay = 1000) {
+    let lastError;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+        
+        // Don't retry if error is not recoverable
+        if (error instanceof FileSystemError && !error.isRecoverable) {
+          throw error;
+        }
+        
+        // Don't retry on the last attempt
+        if (attempt === maxRetries) {
+          break;
+        }
+        
+        // Wait before retry with exponential backoff
+        await new Promise(resolve => setTimeout(resolve, delay * attempt));
+      }
+    }
+    
+    throw lastError;
+  }
+  
+  static handleError(error, operation = 'file operation') {
+    let userMessage = 'An error occurred while performing the operation.';
+    let isRecoverable = true;
+    
+    if (error.message.includes('Network request failed')) {
+      userMessage = 'Network connection lost. Please check your internet connection.';
+    } else if (error.message.includes('Permission denied')) {
+      userMessage = 'Permission denied. Please check file permissions.';
+      isRecoverable = false;
+    } else if (error.message.includes('No such file or directory')) {
+      userMessage = 'File not found. The requested file may have been moved or deleted.';
+    } else if (error.message.includes('Not enough storage')) {
+      userMessage = 'Not enough storage space available on your device.';
+      isRecoverable = false;
+    } else if (error.message.includes('Invalid argument')) {
+      userMessage = 'Invalid file operation parameters.';
+      isRecoverable = false;
+    } else if (error.message.includes('Directory not empty')) {
+      userMessage = 'Cannot delete folder as it contains files.';
+    }
+    
+    // Log detailed error in development, minimal in production
+    if (__DEV__) {
+      console.error(`[${operation}] Error:`, error);
+    } else {
+      console.error(`[${operation}] Error: ${error.message}`);
+    }
+    
+    return new FileSystemError(userMessage, error.code || 'UNKNOWN', isRecoverable);
+  }
+}
+
+// Path utility functions for production reliability
+class PathUtils {
+  static normalizePath(path) {
+    if (!path || typeof path !== 'string') {
+      throw new FileSystemError('Invalid path provided', 'INVALID_PATH', false);
+    }
+    
+    // Remove multiple slashes and normalize path separators
+    return path.replace(/\/+/g, '/').replace(/\\/g, '/');
+  }
+  
+  static validatePath(path) {
+    if (!path || typeof path !== 'string') {
+      return false;
+    }
+    
+    // More lenient validation for mobile platforms
+    // Only check for really dangerous characters, not colons which are common in paths
+    const invalidChars = /[<>"|?*\x00-\x1f]/;
+    if (invalidChars.test(path)) {
+      return false;
+    }
+    
+    // Skip Windows reserved names check on mobile platforms
+    if (Platform.OS === 'android' || Platform.OS === 'ios') {
+      return true;
+    }
+    
+    // Check for reserved names (Windows compatibility) only on Windows
+    const reservedNames = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
+    const pathParts = path.split('/');
+    for (const part of pathParts) {
+      if (reservedNames.test(part)) {
+        return false;
+      }
+    }
+    
+    return true;
+  }
+  
+  static sanitizeFileName(fileName) {
+    if (!fileName || typeof fileName !== 'string') {
+      return 'untitled';
+    }
+    
+    // Remove invalid characters but keep dots for file extensions
+    // Only remove really dangerous characters for mobile platforms
+    return fileName
+      .replace(/[<>"|?*\x00-\x1f]/g, '')
+      .replace(/\//g, '_') // Replace forward slashes with underscores
+      .substring(0, 100)
+      .trim() || 'untitled';
+  }
+  
+  static generateSafePath(basePath, ...segments) {
+    // Don't sanitize the base path, only the additional segments
+    const normalizedSegments = segments.map(segment => {
+      if (typeof segment !== 'string') {
+        segment = String(segment);
+      }
+      return PathUtils.sanitizeFileName(segment);
+    });
+    
+    // Build the full path without sanitizing the base path
+    const fullPath = PathUtils.normalizePath([basePath, ...normalizedSegments].join('/'));
+    
+    // More lenient validation that allows mobile file system paths
+    if (!fullPath || fullPath.length === 0) {
+      throw new FileSystemError('Generated path is empty', 'EMPTY_PATH', false);
+    }
+    
+    return fullPath;
+  }
+}
+
 class FileSystemManager {
   constructor() {
     this.appFolderName = 'NotesApp';
@@ -14,47 +160,81 @@ class FileSystemManager {
   }
 
   async initialize() {
-    try {
-      // Check if user has set a custom storage path
-      this.customStoragePath = await this.getCustomStoragePath();
-      
-      if (this.customStoragePath && Platform.OS === 'android') {
-        // Use custom storage path
-        this.basePath = this.customStoragePath + '/NotesApp/';
-      } else {
-        // Use default document directory
-        this.basePath = FileSystem.documentDirectory + this.appFolderName + '/';
-      }
-      
-      this.hierarchyPath = this.basePath + this.hierarchyFileName;
-      
-      // Create the NotesApp folder if it doesn't exist
-      if (this.customStoragePath && Platform.OS === 'android') {
-        try {
-          await FileSystem.StorageAccessFramework.createFileAsync(
-            this.customStoragePath,
-            'NotesApp',
-            'directory'
+    return await ErrorHandler.withRetry(async () => {
+      try {
+        // Check if user has set a custom storage path
+        this.customStoragePath = await this.getCustomStoragePath();
+        
+        if (this.customStoragePath && Platform.OS === 'android') {
+          // Use custom storage path
+          this.basePath = PathUtils.normalizePath(this.customStoragePath + '/NotesApp/');
+        } else {
+          // Use default document directory
+          this.basePath = PathUtils.normalizePath(FileSystem.documentDirectory + this.appFolderName + '/');
+        }
+        
+        this.hierarchyPath = PathUtils.normalizePath(this.basePath + this.hierarchyFileName);
+        
+        // Create the NotesApp folder if it doesn't exist
+        if (this.customStoragePath && Platform.OS === 'android') {
+          try {
+            await FileSystem.StorageAccessFramework.createFileAsync(
+              this.customStoragePath,
+              'NotesApp',
+              'directory'
+            );
+          } catch (error) {
+            // NotesApp directory may already exist in custom location
+            if (!error.message.includes('already exists')) {
+              throw ErrorHandler.handleError(error, 'create app directory');
+            }
+          }
+        } else {
+          const folderInfo = await FileSystem.getInfoAsync(this.basePath);
+          if (!folderInfo.exists) {
+            await FileSystem.makeDirectoryAsync(this.basePath, { intermediates: true });
+          }
+        }
+        
+        // Initialize hierarchy file if it doesn't exist
+        await this.initializeHierarchy();
+        
+        this.initialized = true;
+        return true;
+      } catch (error) {
+        const fsError = error instanceof FileSystemError ? error : ErrorHandler.handleError(error, 'initialize file system');
+        
+        // Show user-friendly error message
+        if (Platform.OS === 'android') {
+          Alert.alert(
+            'File System Error',
+            `Failed to initialize NotesApp storage: ${fsError.message}. The app will use default storage.`,
+            [{ text: 'OK' }]
           );
-        } catch (error) {
-          // NotesApp directory may already exist in custom location
         }
-      } else {
-        const folderInfo = await FileSystem.getInfoAsync(this.basePath);
-        if (!folderInfo.exists) {
-          await FileSystem.makeDirectoryAsync(this.basePath, { intermediates: true });
+        
+        // Try fallback to default storage
+        if (this.customStoragePath) {
+          this.customStoragePath = null;
+          this.basePath = PathUtils.normalizePath(FileSystem.documentDirectory + this.appFolderName + '/');
+          this.hierarchyPath = PathUtils.normalizePath(this.basePath + this.hierarchyFileName);
+          
+          try {
+            const folderInfo = await FileSystem.getInfoAsync(this.basePath);
+            if (!folderInfo.exists) {
+              await FileSystem.makeDirectoryAsync(this.basePath, { intermediates: true });
+            }
+            await this.initializeHierarchy();
+            this.initialized = true;
+            return true;
+          } catch (fallbackError) {
+            throw ErrorHandler.handleError(fallbackError, 'initialize fallback storage');
+          }
         }
+        
+        throw fsError;
       }
-      
-      // Initialize hierarchy file if it doesn't exist
-      await this.initializeHierarchy();
-      
-      this.initialized = true;
-      return true;
-    } catch (error) {
-      console.error('Failed to initialize file system:', error);
-      return false;
-    }
+    }, 2, 1500);
   }
 
   async forceRefresh() {
@@ -159,25 +339,55 @@ class FileSystemManager {
   }
 
   async getHierarchy() {
-    try {
-      if (!this.initialized) {
-        await this.initialize();
-      }
-      
-      // Check if hierarchy file exists
-      const hierarchyInfo = await FileSystem.getInfoAsync(this.hierarchyPath);
-      if (!hierarchyInfo.exists) {
+    return await ErrorHandler.withRetry(async () => {
+      try {
+        if (!this.initialized) {
+          await this.initialize();
+        }
+        
+        // Check if hierarchy file exists
+        const hierarchyInfo = await FileSystem.getInfoAsync(this.hierarchyPath);
+        if (!hierarchyInfo.exists) {
+          // Try to recreate hierarchy file if it doesn't exist
+          await this.initializeHierarchy();
+          const newHierarchyInfo = await FileSystem.getInfoAsync(this.hierarchyPath);
+          if (!newHierarchyInfo.exists) {
+            throw new FileSystemError('Unable to create or access hierarchy file', 'HIERARCHY_ACCESS_ERROR', false);
+          }
+        }
+        
+        const hierarchyContent = await FileSystem.readAsStringAsync(this.hierarchyPath);
+        
+        // Validate JSON structure
+        let hierarchy;
+        try {
+          hierarchy = JSON.parse(hierarchyContent);
+        } catch (parseError) {
+          throw new FileSystemError('Hierarchy file is corrupted. Please restore from backup.', 'HIERARCHY_CORRUPTED', false);
+        }
+        
+        // Validate hierarchy structure
+        if (!hierarchy.structure || !hierarchy.structure.notebooks) {
+          throw new FileSystemError('Hierarchy file has invalid structure', 'HIERARCHY_INVALID_STRUCTURE', false);
+        }
+        
+        return hierarchy;
+      } catch (error) {
+        const fsError = error instanceof FileSystemError ? error : ErrorHandler.handleError(error, 'read hierarchy');
+        
+        // For critical errors, show user-friendly message
+        if (!fsError.isRecoverable) {
+          Alert.alert(
+            'Data Access Error',
+            `Cannot access your notes data: ${fsError.message}. Please check your storage permissions or restore from backup.`,
+            [{ text: 'OK' }]
+          );
+        }
+        
+        // Return null to allow app to continue with empty state
         return null;
       }
-      
-      const hierarchyContent = await FileSystem.readAsStringAsync(this.hierarchyPath);
-      const hierarchy = JSON.parse(hierarchyContent);
-      
-      return hierarchy;
-    } catch (error) {
-      console.error('Failed to read hierarchy:', error);
-      return null;
-    }
+    }, 3, 1000);
   }
 
   async updateHierarchy(updatedHierarchy) {
@@ -203,19 +413,21 @@ class FileSystemManager {
   async createNotebook(notebookData) {
     try {
       const notebookId = Date.now().toString();
+      const sanitizedTitle = PathUtils.sanitizeFileName(notebookData.title || 'Untitled Notebook');
       const notebookPath = `/notebooks/${notebookId}`;
-      const fullPath = this.basePath + notebookPath;
+      const fullPath = PathUtils.normalizePath(this.basePath + `notebooks/${notebookId}`);
       
       // Create notebook directory
       await FileSystem.makeDirectoryAsync(fullPath, { intermediates: true });
       
       // Create chapters directory
-      await FileSystem.makeDirectoryAsync(fullPath + '/chapters', { intermediates: true });
+      const chaptersPath = PathUtils.normalizePath(fullPath + '/chapters');
+      await FileSystem.makeDirectoryAsync(chaptersPath, { intermediates: true });
       
       // Create metadata.json
       const metadata = {
         id: notebookId,
-        title: notebookData.title,
+        title: notebookData.title || 'Untitled Notebook',
         description: notebookData.description || '',
         tags: notebookData.tags || [],
         color: notebookData.color || '#6366f1',
@@ -226,8 +438,9 @@ class FileSystemManager {
         chaptersCount: 0
       };
       
+      const metadataPath = PathUtils.normalizePath(fullPath + '/metadata.json');
       await FileSystem.writeAsStringAsync(
-        fullPath + '/metadata.json',
+        metadataPath,
         JSON.stringify(metadata, null, 2)
       );
       
@@ -447,84 +660,129 @@ class FileSystemManager {
   }
 
   async updateNote(notebookId, chapterId, noteId, noteData) {
-    try {
-      console.log('Attempting to update note:', { notebookId, chapterId, noteId });
-      console.log('Current base path:', this.basePath);
-      console.log('Custom storage path:', this.customStoragePath);
-      
-      const hierarchy = await this.getHierarchy();
-      if (!hierarchy || !hierarchy.structure.notebooks[notebookId] || 
-          !hierarchy.structure.notebooks[notebookId].chapters[chapterId] ||
-          !hierarchy.structure.notebooks[notebookId].chapters[chapterId].notes[noteId]) {
-        console.log('Note not found in hierarchy');
-        return { success: false, error: 'Note not found' };
+    return await ErrorHandler.withRetry(async () => {
+      try {
+        if (__DEV__) {
+          console.log('Attempting to update note:', { notebookId, chapterId, noteId });
+          console.log('Current base path:', this.basePath);
+          console.log('Custom storage path:', this.customStoragePath);
+        }
+        
+        // Validate input parameters
+        if (!notebookId || !chapterId || !noteId || !noteData) {
+          throw new FileSystemError('Invalid parameters provided for note update', 'INVALID_PARAMS', false);
+        }
+        
+        const hierarchy = await this.getHierarchy();
+        if (!hierarchy || !hierarchy.structure.notebooks[notebookId] || 
+            !hierarchy.structure.notebooks[notebookId].chapters[chapterId] ||
+            !hierarchy.structure.notebooks[notebookId].chapters[chapterId].notes[noteId]) {
+          throw new FileSystemError('Note not found in the system', 'NOTE_NOT_FOUND', false);
+        }
+        
+        // Update note in hierarchy
+        const note = hierarchy.structure.notebooks[notebookId].chapters[chapterId].notes[noteId];
+        note.title = noteData.title;
+        note.content = noteData.content || '';
+        note.tags = noteData.tags || note.tags || [];
+        note.paragraphs = noteData.paragraphs || note.paragraphs || [];
+        note.lastModified = new Date().toISOString();
+        
+        // Update timestamps
+        hierarchy.structure.notebooks[notebookId].chapters[chapterId].lastModified = new Date().toISOString();
+        hierarchy.structure.notebooks[notebookId].lastModified = new Date().toISOString();
+        
+        // Update note files
+        const notePath = this.basePath + note.path;
+        if (__DEV__) {
+          console.log('Attempting to write to path:', notePath);
+        }
+        
+        const metadata = {
+          id: noteId,
+          notebookId: notebookId,
+          chapterId: chapterId,
+          title: noteData.title,
+          content: noteData.content || '',
+          tags: noteData.tags || note.tags || [],
+          paragraphs: noteData.paragraphs || note.paragraphs || [],
+          created: note.created,
+          lastModified: new Date().toISOString()
+        };
+        
+        // Check if the note directory exists, create if it doesn't
+        const noteDir = notePath.substring(0, notePath.lastIndexOf('/'));
+        const noteDirInfo = await FileSystem.getInfoAsync(noteDir);
+        
+        if (!noteDirInfo.exists) {
+          if (__DEV__) {
+            console.log('Note directory does not exist, creating:', noteDir);
+          }
+          await FileSystem.makeDirectoryAsync(noteDir, { intermediates: true });
+        }
+        
+        // Write files atomically (write to temp files first, then move)
+        const metadataPath = notePath + '/metadata.json';
+        const contentPath = notePath + '/content.txt';
+        const tempMetadataPath = metadataPath + '.tmp';
+        const tempContentPath = contentPath + '.tmp';
+        
+        try {
+          // Write to temporary files first
+          await FileSystem.writeAsStringAsync(
+            tempMetadataPath,
+            JSON.stringify(metadata, null, 2)
+          );
+          
+          await FileSystem.writeAsStringAsync(
+            tempContentPath,
+            noteData.content || ''
+          );
+          
+          // Move temporary files to final location (atomic operation)
+          await FileSystem.moveAsync({
+            from: tempMetadataPath,
+            to: metadataPath
+          });
+          
+          await FileSystem.moveAsync({
+            from: tempContentPath,
+            to: contentPath
+          });
+          
+        } catch (writeError) {
+          // Clean up temporary files on error
+          try {
+            await FileSystem.deleteAsync(tempMetadataPath, { idempotent: true });
+            await FileSystem.deleteAsync(tempContentPath, { idempotent: true });
+          } catch (cleanupError) {
+            // Ignore cleanup errors
+          }
+          throw writeError;
+        }
+        
+        // Update hierarchy
+        await this.updateHierarchy(hierarchy);
+        
+        if (__DEV__) {
+          console.log('Note updated successfully');
+        }
+        return { success: true };
+      } catch (error) {
+        const fsError = error instanceof FileSystemError ? error : ErrorHandler.handleError(error, 'update note');
+        
+        // Show user-friendly error message for critical errors
+        if (!fsError.isRecoverable) {
+          Alert.alert(
+            'Unable to Save Note',
+            `Failed to save your note: ${fsError.message}. Please try again or check your storage permissions.`,
+            [{ text: 'OK' }]
+          );
+        }
+        
+        return { success: false, error: fsError.message };
       }
-      
-      // Update note in hierarchy
-      const note = hierarchy.structure.notebooks[notebookId].chapters[chapterId].notes[noteId];
-      note.title = noteData.title;
-      note.content = noteData.content || '';
-      note.tags = noteData.tags || note.tags || [];
-      note.paragraphs = noteData.paragraphs || note.paragraphs || [];
-      note.lastModified = new Date().toISOString();
-      
-      // Update timestamps
-      hierarchy.structure.notebooks[notebookId].chapters[chapterId].lastModified = new Date().toISOString();
-      hierarchy.structure.notebooks[notebookId].lastModified = new Date().toISOString();
-      
-      // Update note files
-      const notePath = this.basePath + note.path;
-      console.log('Attempting to write to path:', notePath);
-      
-      const metadata = {
-        id: noteId,
-        notebookId: notebookId,
-        chapterId: chapterId,
-        title: noteData.title,
-        content: noteData.content || '',
-        tags: noteData.tags || note.tags || [],
-        paragraphs: noteData.paragraphs || note.paragraphs || [],
-        created: note.created,
-        lastModified: new Date().toISOString()
-      };
-      
-      // Check if the note directory exists, create if it doesn't
-      const noteDir = notePath.substring(0, notePath.lastIndexOf('/'));
-      const noteDirInfo = await FileSystem.getInfoAsync(noteDir);
-      
-      if (!noteDirInfo.exists) {
-        console.log('Note directory does not exist, creating:', noteDir);
-        await FileSystem.makeDirectoryAsync(noteDir, { intermediates: true });
-      }
-      
-      // Check if metadata file exists
-      const metadataPath = notePath + '/metadata.json';
-      const metadataInfo = await FileSystem.getInfoAsync(metadataPath);
-      
-      if (!metadataInfo.exists) {
-        console.log('Metadata file does not exist, will create:', metadataPath);
-      }
-      
-      await FileSystem.writeAsStringAsync(
-        metadataPath,
-        JSON.stringify(metadata, null, 2)
-      );
-      
-      await FileSystem.writeAsStringAsync(
-        notePath + '/content.txt',
-        noteData.content || ''
-      );
-      
-      await this.updateHierarchy(hierarchy);
-      
-      console.log('Note updated successfully');
-      return { success: true };
-    } catch (error) {
-      console.error('Failed to update note:', error);
-      console.error('Error details:', error.message);
-      console.error('Stack trace:', error.stack);
-      return { success: false, error: error.message };
-    }
+    }, 2, 1000);
   }
 
   async softDeleteNote(notebookId, chapterId, noteId) {

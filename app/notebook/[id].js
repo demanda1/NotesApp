@@ -25,7 +25,6 @@ export default function ChapterScreen() {
   const { id: notebookId } = useLocalSearchParams();
   const [searchQuery, setSearchQuery] = useState('');
   const [leftSidebarVisible, setLeftSidebarVisible] = useState(false);
-  const [rightSidebarVisible, setRightSidebarVisible] = useState(false);
   const [createChapterModalVisible, setCreateChapterModalVisible] = useState(false);
   const [chapters, setChapters] = useState([]);
   const [notebook, setNotebook] = useState(null);
@@ -225,31 +224,10 @@ export default function ChapterScreen() {
     ]).start();
   };
 
-  const slideInRight = () => {
-    setRightSidebarVisible(true);
-    Animated.parallel([
-      Animated.timing(rightSlideAnim, {
-        toValue: 0,
-        duration: 300,
-        useNativeDriver: true,
-      }),
-      Animated.timing(overlayOpacity, {
-        toValue: 1,
-        duration: 300,
-        useNativeDriver: true,
-      }),
-    ]).start();
-  };
-
   const slideOut = () => {
     Animated.parallel([
       Animated.timing(leftSlideAnim, {
         toValue: -SIDEBAR_WIDTH,
-        duration: 300,
-        useNativeDriver: true,
-      }),
-      Animated.timing(rightSlideAnim, {
-        toValue: SIDEBAR_WIDTH,
         duration: 300,
         useNativeDriver: true,
       }),
@@ -260,16 +238,11 @@ export default function ChapterScreen() {
       }),
     ]).start(() => {
       setLeftSidebarVisible(false);
-      setRightSidebarVisible(false);
     });
   };
 
   const handleHamburgerMenu = () => {
     slideInLeft();
-  };
-
-  const handleKebabMenu = () => {
-    slideInRight();
   };
 
   const closeSidebars = () => {
@@ -360,12 +333,7 @@ export default function ChapterScreen() {
             </Text>
           </View>
           
-          <TouchableOpacity 
-            style={styles.menuButton}
-            onPress={handleKebabMenu}
-          >
-            <Ionicons name="ellipsis-vertical-outline" size={24} color="#fff" />
-          </TouchableOpacity>
+          <View style={styles.headerSpacer} />
         </View>
         
         {/* Search Bar */}
@@ -421,7 +389,7 @@ export default function ChapterScreen() {
       </TouchableOpacity>
 
       {/* Animated Overlay and Sidebars */}
-      {(leftSidebarVisible || rightSidebarVisible) && (
+      {leftSidebarVisible && (
         <View style={styles.modalContainer}>
           {/* Animated Overlay */}
           <Animated.View 
