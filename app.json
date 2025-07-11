@@ -9,7 +9,7 @@
     "splash": {
       "image": "./assets/images/notesapplogo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#6366f1"
+      "backgroundColor": "#ffffff"
     },
     "assetBundlePatterns": [
       "**/*"
@@ -25,8 +25,8 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/notesapplogo.png",
-        "backgroundColor": "#6366f1"
+        "foregroundImage": "./assets/images/notesapplogo-adaptive-fg.png",
+        "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
       "package": "com.demandapps.notesapp",
