@@ -31,7 +31,7 @@ export default function ChapterScreen() {
   const [chapterName, setChapterName] = useState('');
   const [chapterDescription, setChapterDescription] = useState('');
   const [selectedChapterColor, setSelectedChapterColor] = useState('#6366f1');
-  const [selectedChapterNumber, setSelectedChapterNumber] = useState(1);
+  const [selectedChapterNumber, setSelectedChapterNumber] = useState('1');
   const [loading, setLoading] = useState(true);
   const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
   const [chapterToDelete, setChapterToDelete] = useState(null);
@@ -87,6 +87,13 @@ export default function ChapterScreen() {
       return;
     }
 
+    if (!isValidChapterNumber(selectedChapterNumber)) {
+      Alert.alert('Error', 'Please enter a valid chapter number (1-999)');
+      return;
+    }
+
+    const chapterNumber = parseInt(selectedChapterNumber);
+
     try {
       let result;
       
@@ -96,7 +103,7 @@ export default function ChapterScreen() {
           title: chapterName.trim(),
           description: chapterDescription.trim(),
           color: selectedChapterColor,
-          chapterNumber: selectedChapterNumber
+          chapterNumber: chapterNumber
         });
       } else {
         // Create new chapter
@@ -104,7 +111,7 @@ export default function ChapterScreen() {
           title: chapterName.trim(),
           description: chapterDescription.trim(),
           color: selectedChapterColor,
-          chapterNumber: selectedChapterNumber
+          chapterNumber: chapterNumber
         });
       }
 
@@ -115,7 +122,7 @@ export default function ChapterScreen() {
         setChapterName('');
         setChapterDescription('');
         setSelectedChapterColor('#6366f1');
-        setSelectedChapterNumber(1);
+        setSelectedChapterNumber('1');
         setEditingChapter(null);
         setIsEditMode(false);
         setCreateChapterModalVisible(false);
@@ -137,7 +144,7 @@ export default function ChapterScreen() {
     setChapterName(chapter.title);
     setChapterDescription(chapter.description || '');
     setSelectedChapterColor(chapter.color);
-    setSelectedChapterNumber(chapter.chapterNumber || 1);
+    setSelectedChapterNumber((chapter.chapterNumber || 1).toString());
     setCreateChapterModalVisible(true);
   };
 
@@ -147,7 +154,7 @@ export default function ChapterScreen() {
     setChapterName('');
     setChapterDescription('');
     setSelectedChapterColor('#6366f1');
-    setSelectedChapterNumber(1);
+    setSelectedChapterNumber('1');
     setCreateChapterModalVisible(true);
   };
 
@@ -206,6 +213,16 @@ export default function ChapterScreen() {
 
   const clearSearch = () => {
     setSearchQuery('');
+  };
+
+  const isValidChapterNumber = (numberStr) => {
+    if (!numberStr.trim()) return false;
+    const num = parseInt(numberStr);
+    return !isNaN(num) && num >= 1 && num <= 999;
+  };
+
+  const isFormValid = () => {
+    return chapterName.trim() && isValidChapterNumber(selectedChapterNumber);
   };
 
   const slideInLeft = () => {
@@ -518,37 +535,30 @@ export default function ChapterScreen() {
 
             {/* Chapter Number Input */}
             <View style={styles.formSection}>
-              <Text style={styles.formLabel}>Chapter Number (Chronology)</Text>
-              <TextInput
-                style={styles.formInput}
-                value={selectedChapterNumber.toString()}
-                onChangeText={(text) => {
-                  // Only allow numbers
-                  const numericValue = text.replace(/[^0-9]/g, '');
-                  if (numericValue === '') {
-                    setSelectedChapterNumber(1);
-                  } else {
-                    const number = parseInt(numericValue);
-                    if (number >= 1 && number <= 999) {
-                      setSelectedChapterNumber(number);
-                    }
-                  }
-                }}
-                placeholder="Enter chapter number (1-999)"
-                placeholderTextColor="#9ca3af"
-                keyboardType="numeric"
-                maxLength={3}
-              />
+              <Text style={styles.formLabel}>Chapter Number (Chronology) *</Text>
+                          <TextInput
+              style={styles.formInput}
+              value={selectedChapterNumber}
+              onChangeText={(text) => {
+                // Only allow numbers
+                const numericValue = text.replace(/[^0-9]/g, '');
+                setSelectedChapterNumber(numericValue);
+              }}
+              placeholder="Enter chapter number (1-999) *"
+              placeholderTextColor="#9ca3af"
+              keyboardType="numeric"
+              maxLength={3}
+            />
             </View>
 
             {/* Create Button */}
             <TouchableOpacity 
               style={[
                 styles.createButton,
-                !chapterName.trim() && styles.createButtonDisabled
+                !isFormValid() && styles.createButtonDisabled
               ]}
               onPress={createChapter}
-              disabled={!chapterName.trim()}
+              disabled={!isFormValid()}
             >
               <Text style={styles.createButtonText}>{isEditMode ? 'Update Chapter' : 'Create Chapter'}</Text>
             </TouchableOpacity>

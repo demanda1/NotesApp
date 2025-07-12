@@ -662,11 +662,7 @@ class FileSystemManager {
   async updateNote(notebookId, chapterId, noteId, noteData) {
     return await ErrorHandler.withRetry(async () => {
       try {
-        if (__DEV__) {
-          console.log('Attempting to update note:', { notebookId, chapterId, noteId });
-          console.log('Current base path:', this.basePath);
-          console.log('Custom storage path:', this.customStoragePath);
-        }
+
         
         // Validate input parameters
         if (!notebookId || !chapterId || !noteId || !noteData) {
@@ -694,9 +690,6 @@ class FileSystemManager {
         
         // Update note files
         const notePath = this.basePath + note.path;
-        if (__DEV__) {
-          console.log('Attempting to write to path:', notePath);
-        }
         
         const metadata = {
           id: noteId,
@@ -715,9 +708,6 @@ class FileSystemManager {
         const noteDirInfo = await FileSystem.getInfoAsync(noteDir);
         
         if (!noteDirInfo.exists) {
-          if (__DEV__) {
-            console.log('Note directory does not exist, creating:', noteDir);
-          }
           await FileSystem.makeDirectoryAsync(noteDir, { intermediates: true });
         }
         
@@ -764,9 +754,6 @@ class FileSystemManager {
         // Update hierarchy
         await this.updateHierarchy(hierarchy);
         
-        if (__DEV__) {
-          console.log('Note updated successfully');
-        }
         return { success: true };
       } catch (error) {
         const fsError = error instanceof FileSystemError ? error : ErrorHandler.handleError(error, 'update note');

@@ -15,6 +15,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   Keyboard,
+  PanResponder,
+  TouchableWithoutFeedback,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, router } from 'expo-router';
@@ -47,22 +49,23 @@ export default function NotesScreen() {
   const [viewNoteModalVisible, setViewNoteModalVisible] = useState(false);
   const [viewingNote, setViewingNote] = useState(null);
   const [newMessage, setNewMessage] = useState('');
-  const [isReaderMode, setIsReaderMode] = useState(true);
+  const [viewMode, setViewMode] = useState('reader'); // 'reader', 'editor', 'chat'
+  const [editingMessageId, setEditingMessageId] = useState(null);
+  const [editingMessageText, setEditingMessageText] = useState('');
+  const [highlightedMessageId, setHighlightedMessageId] = useState(null);
+  const slideAnimations = useRef(new Map()).current;
+  const isPanningRef = useRef(false);
   
-  // Rich text formatting
-  const [isBold, setIsBold] = useState(false);
-  const [isItalic, setIsItalic] = useState(false);
-  const [isUnderline, setIsUnderline] = useState(false);
-  const [textAlign, setTextAlign] = useState('left');
-  const [selectionStart, setSelectionStart] = useState(0);
-  const [selectionEnd, setSelectionEnd] = useState(0);
+  // Auto-save functionality
+  const [isSaving, setIsSaving] = useState(false);
+  const [lastSaved, setLastSaved] = useState(null);
   const contentInputRef = useRef(null);
-  const [isEditingContent, setIsEditingContent] = useState(false);
+  const autoSaveTimeoutRef = useRef(null);
+  const messageEditTimeoutRef = useRef(null);
   
   // Keyboard handling
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
-  const scrollViewRef = useRef(null);
   
   // Animation values
   const rightSlideAnim = useRef(new Animated.Value(SIDEBAR_WIDTH)).current;
@@ -74,16 +77,86 @@ export default function NotesScreen() {
     loadChapterAndNotes();
   }, [notebookId, chapterId]);
 
+  // Auto-save functionality
+  const autoSave = async () => {
+    if (!isEditMode || !editingNote || !noteTitle.trim()) return;
+    
+    setIsSaving(true);
+    try {
+      // Prepare tags array with priority
+      const tags = [];
+      if (noteTag1.trim()) tags.push(noteTag1.trim());
+      if (noteTag2.trim()) tags.push(noteTag2.trim());
+      tags.push(`priority:${notePriority}`);
+
+      const result = await fileSystemManager.updateNote(notebookId, chapterId, editingNote.id, {
+        title: noteTitle.trim(),
+        content: noteContent.trim(),
+        tags: tags
+      });
+
+      if (result.success) {
+        setLastSaved(new Date());
+        // Update the editingNote to reflect the changes
+        setEditingNote(prev => ({
+          ...prev,
+          title: noteTitle.trim(),
+          content: noteContent.trim(),
+          tags: tags,
+          lastModified: new Date().toISOString()
+        }));
+        // Reload notes list to show updated changes
+        loadNotes();
+      }
+    } catch (error) {
+      console.error('Auto-save error:', error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Debounced auto-save
+  const debouncedAutoSave = () => {
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current);
+    }
+    autoSaveTimeoutRef.current = setTimeout(autoSave, 1000); // Save after 1 second of inactivity
+  };
+
+  // Auto-save when title or content changes
+  useEffect(() => {
+    if (isEditMode && editingNote) {
+      debouncedAutoSave();
+    }
+    return () => {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+      }
+    };
+  }, [noteTitle, noteContent, isEditMode, editingNote]);
+
+  // Auto-save when editing message text changes
+  useEffect(() => {
+    if (editingMessageId && editingMessageText.trim()) {
+      if (messageEditTimeoutRef.current) {
+        clearTimeout(messageEditTimeoutRef.current);
+      }
+      messageEditTimeoutRef.current = setTimeout(() => {
+        saveMessageEdit(editingMessageId, editingMessageText);
+      }, 1000); // Save after 1 second of inactivity
+    }
+    return () => {
+      if (messageEditTimeoutRef.current) {
+        clearTimeout(messageEditTimeoutRef.current);
+      }
+    };
+  }, [editingMessageText, editingMessageId]);
+
   // Keyboard event listeners
   useEffect(() => {
     const keyboardDidShowListener = Keyboard.addListener('keyboardDidShow', (event) => {
       setKeyboardHeight(event.endCoordinates.height);
       setIsKeyboardVisible(true);
-      
-      // Auto-scroll to bottom when keyboard appears
-      setTimeout(() => {
-        scrollViewRef.current?.scrollToEnd({ animated: true });
-      }, 100);
     });
 
     const keyboardDidHideListener = Keyboard.addListener('keyboardDidHide', () => {
@@ -165,26 +238,16 @@ export default function NotesScreen() {
       if (noteTag2.trim()) tags.push(noteTag2.trim());
       tags.push(`priority:${notePriority}`);
 
-      let result;
-      
-      if (isEditMode && editingNote) {
-        // Update existing note
-        result = await fileSystemManager.updateNote(notebookId, chapterId, editingNote.id, {
+      // Only create new notes - edit mode uses auto-save
+      if (!isEditMode) {
+        const result = await fileSystemManager.createNote(notebookId, chapterId, {
           title: noteTitle.trim(),
           content: noteContent.trim(),
           tags: tags
         });
-      } else {
-        // Create new note
-        result = await fileSystemManager.createNote(notebookId, chapterId, {
-          title: noteTitle.trim(),
-          content: noteContent.trim(),
-          tags: tags
-        });
-      }
 
       if (result.success) {
-        Alert.alert('Success', isEditMode ? 'Note updated successfully!' : 'Note created successfully!');
+          Alert.alert('Success', 'Note created successfully!');
         
         // Reset form
         setNoteTitle('');
@@ -192,18 +255,19 @@ export default function NotesScreen() {
         setNoteTag1('');
         setNoteTag2('');
         setNotePriority('Low');
-        setEditingNote(null);
-        setIsEditMode(false);
         setCreateNoteModalVisible(false);
-        resetFormatting();
         
         // Reload notes
         await loadNotes();
       } else {
-        Alert.alert('Error', result.error || `Failed to ${isEditMode ? 'update' : 'create'} note`);
+          Alert.alert('Error', result.error || 'Failed to create note');
+        }
+      } else {
+        // For edit mode, just close the modal as auto-save handles updates
+        setCreateNoteModalVisible(false);
       }
     } catch (error) {
-      Alert.alert('Error', `Failed to ${isEditMode ? 'update' : 'create'} note`);
+      Alert.alert('Error', `Failed to ${isEditMode ? 'save' : 'create'} note`);
       console.error(error);
     }
   };
@@ -249,14 +313,13 @@ export default function NotesScreen() {
     setNoteTag1('');
     setNoteTag2('');
     setNotePriority('Low');
-    setIsEditingContent(true);
-    resetFormatting();
+    setLastSaved(null);
     setCreateNoteModalVisible(true);
   };
 
   const handleViewNote = (note) => {
     setViewingNote(note);
-    setIsReaderMode(true); // Default to reader mode
+    setViewMode('reader'); // Default to reader mode
     setViewNoteModalVisible(true);
   };
 
@@ -279,7 +342,7 @@ export default function NotesScreen() {
     setViewNoteModalVisible(false);
     setViewingNote(null);
     setNewMessage('');
-    setIsReaderMode(true);
+    setViewMode('reader');
   };
 
   const handleDeleteNote = (note) => {
@@ -312,132 +375,29 @@ export default function NotesScreen() {
     setNoteToDelete(null);
   };
 
-  const resetFormatting = () => {
-    setIsBold(false);
-    setIsItalic(false);
-    setIsUnderline(false);
-    setTextAlign('left');
-    setSelectionStart(0);
-    setSelectionEnd(0);
-    setIsEditingContent(false);
-  };
-
-  const applyFormatting = (type) => {
-    // Switch to editing mode if not already editing
-    if (!isEditingContent) {
-      setIsEditingContent(true);
-      // Use setTimeout to allow the TextInput to render before applying formatting
-      setTimeout(() => {
-        applyFormattingInternal(type);
-      }, 100);
-      return;
+  const closeEditor = () => {
+    setCreateNoteModalVisible(false);
+    
+    // If we came from the note viewer (editing mode), return to the note viewer
+    if (isEditMode && editingNote) {
+      // Update the viewing note with the latest changes
+      setViewingNote(editingNote);
+      setViewNoteModalVisible(true);
     }
     
-    applyFormattingInternal(type);
-  };
-
-  const applyFormattingInternal = (type) => {
-    const hasSelection = selectionStart !== selectionEnd;
+    setEditingNote(null);
+    setIsEditMode(false);
+    setNoteTitle('');
+    setNoteContent('');
+    setNoteTag1('');
+    setNoteTag2('');
+    setNotePriority('Low');
+    setLastSaved(null);
     
-    if (!hasSelection && type !== 'bullet' && type !== 'numbered') {
-      // If no text is selected, just toggle the formatting state for new text
-      switch (type) {
-        case 'bold':
-          setIsBold(!isBold);
-          break;
-        case 'italic':
-          setIsItalic(!isItalic);
-          break;
-        case 'underline':
-          setIsUnderline(!isUnderline);
-          break;
-      }
-      return;
+    // Clear auto-save timeout
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current);
     }
-
-    const beforeText = noteContent.substring(0, selectionStart);
-    const selectedText = noteContent.substring(selectionStart, selectionEnd);
-    const afterText = noteContent.substring(selectionEnd);
-
-    let newText = '';
-    let newCursorPosition = selectionEnd;
-
-    switch (type) {
-      case 'bold':
-        if (hasSelection) {
-          // Check if text is already bold
-          if (selectedText.startsWith('**') && selectedText.endsWith('**')) {
-            // Remove bold formatting
-            newText = beforeText + selectedText.slice(2, -2) + afterText;
-            newCursorPosition = selectionStart + selectedText.length - 4;
-          } else {
-            // Add bold formatting
-            newText = beforeText + '**' + selectedText + '**' + afterText;
-            newCursorPosition = selectionEnd + 4;
-          }
-        }
-        break;
-      case 'italic':
-        if (hasSelection) {
-          // Check if text is already italic
-          if (selectedText.startsWith('*') && selectedText.endsWith('*') && !selectedText.startsWith('**')) {
-            // Remove italic formatting
-            newText = beforeText + selectedText.slice(1, -1) + afterText;
-            newCursorPosition = selectionStart + selectedText.length - 2;
-          } else {
-            // Add italic formatting
-            newText = beforeText + '*' + selectedText + '*' + afterText;
-            newCursorPosition = selectionEnd + 2;
-          }
-        }
-        break;
-      case 'underline':
-        if (hasSelection) {
-          // Check if text is already underlined
-          if (selectedText.startsWith('__') && selectedText.endsWith('__')) {
-            // Remove underline formatting
-            newText = beforeText + selectedText.slice(2, -2) + afterText;
-            newCursorPosition = selectionStart + selectedText.length - 4;
-          } else {
-            // Add underline formatting
-            newText = beforeText + '__' + selectedText + '__' + afterText;
-            newCursorPosition = selectionEnd + 4;
-          }
-        }
-        break;
-      case 'bullet':
-        const lines = noteContent.split('\n');
-        const lastLine = lines[lines.length - 1];
-        if (!lastLine.startsWith('• ')) {
-          setNoteContent(noteContent + '\n• ');
-        }
-        return;
-      case 'numbered':
-        const numberedLines = noteContent.split('\n');
-        const lastNumberedLine = numberedLines[numberedLines.length - 1];
-        const nextNumber = numberedLines.filter(line => /^\d+\./.test(line)).length + 1;
-        if (!/^\d+\./.test(lastNumberedLine)) {
-          setNoteContent(noteContent + `\n${nextNumber}. `);
-        }
-        return;
-    }
-
-    if (newText !== '') {
-      setNoteContent(newText);
-      
-      // Set cursor position after formatting
-      setTimeout(() => {
-        if (contentInputRef.current) {
-          contentInputRef.current.setNativeProps({
-            selection: { start: newCursorPosition, end: newCursorPosition }
-          });
-        }
-      }, 100);
-    }
-  };
-
-  const setAlignment = (alignment) => {
-    setTextAlign(alignment);
   };
 
   const formatDate = (dateString) => {
@@ -613,9 +573,206 @@ export default function NotesScreen() {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  const toggleViewMode = () => {
-    setIsReaderMode(!isReaderMode);
+  const startEditingMessage = (messageId, messageText) => {
+    setEditingMessageId(messageId);
+    setEditingMessageText(messageText);
   };
+
+  const saveMessageEdit = async (messageId, newText) => {
+    if (!viewingNote || !newText.trim()) return;
+    
+    try {
+      // Parse current content into paragraphs
+      const paragraphs = parseContentToParagraphs(viewingNote.content || '');
+      
+      // Find and update the specific paragraph
+      const updatedParagraphs = paragraphs.map(paragraph => {
+        if (paragraph.id === messageId) {
+          return { ...paragraph, text: newText.trim() };
+        }
+        return paragraph;
+      });
+      
+      // Reconstruct the content from paragraphs
+      const updatedContent = updatedParagraphs.map(p => p.text).join('\n');
+      
+      // Update the viewing note
+      const updatedNote = {
+        ...viewingNote,
+        content: updatedContent,
+        lastModified: new Date().toISOString()
+      };
+      
+      // Update in file system
+      await fileSystemManager.updateNote(notebookId, chapterId, viewingNote.id, {
+        title: viewingNote.title,
+        content: updatedContent,
+        tags: viewingNote.tags,
+        lastModified: updatedNote.lastModified
+      });
+      
+      // Update local state
+      setViewingNote(updatedNote);
+      
+      // Update the notes list
+      loadNotes();
+      
+    } catch (error) {
+      console.error('Error saving message edit:', error);
+    }
+  };
+
+  const finishEditingMessage = () => {
+    if (editingMessageId && editingMessageText.trim()) {
+      saveMessageEdit(editingMessageId, editingMessageText);
+    }
+    setEditingMessageId(null);
+    setEditingMessageText('');
+  };
+
+  const handleLongPressMessage = (messageId) => {
+    setHighlightedMessageId(messageId);
+    // Initialize slide animation for this message if not exists
+    if (!slideAnimations.has(messageId)) {
+      slideAnimations.set(messageId, new Animated.Value(0));
+    }
+  };
+
+  const handlePressOut = () => {
+    // Clear selection when user lifts finger without swiping
+    // Only clear if not currently panning (swiping)
+    if (!isPanningRef.current && highlightedMessageId) {
+      // Reset the slide animation for the highlighted message
+      const slideAnim = getSlideAnimation(highlightedMessageId);
+      slideAnim.flattenOffset();
+      slideAnim.setValue(0);
+      
+      setHighlightedMessageId(null);
+    }
+  };
+
+  const clearSelection = () => {
+    // Clear selection when tapping anywhere else on screen
+    if (highlightedMessageId && !isPanningRef.current) {
+      // Reset the slide animation for the highlighted message
+      const slideAnim = getSlideAnimation(highlightedMessageId);
+      slideAnim.flattenOffset();
+      slideAnim.setValue(0);
+      
+      setHighlightedMessageId(null);
+    }
+  };
+
+  const getSlideAnimation = (messageId) => {
+    if (!slideAnimations.has(messageId)) {
+      slideAnimations.set(messageId, new Animated.Value(0));
+    }
+    return slideAnimations.get(messageId);
+  };
+
+  const deleteMessage = (messageId) => {
+    if (!viewingNote) return;
+    
+    // Find the text to delete
+    const paragraphs = parseContentToParagraphs(viewingNote.content || '');
+    const messageToDelete = paragraphs.find(paragraph => paragraph.id === messageId);
+    
+    if (messageToDelete && messageToDelete.text) {
+      // Simply remove that specific text from the note content
+      const updatedContent = viewingNote.content.replace(messageToDelete.text, '').replace(/\n\n+/g, '\n').trim();
+      
+      // Update the viewing note
+      const updatedNote = {
+        ...viewingNote,
+        content: updatedContent,
+        lastModified: new Date().toISOString()
+      };
+      
+      // Clean up animation state for deleted message
+      if (slideAnimations.has(messageId)) {
+        slideAnimations.delete(messageId);
+      }
+      
+      // Update state directly
+      setViewingNote(updatedNote);
+      setHighlightedMessageId(null);
+      
+      // Save changes after a delay
+      const saveChanges = async () => {
+        try {
+          await fileSystemManager.updateNote(notebookId, chapterId, viewingNote.id, {
+            title: viewingNote.title,
+            content: updatedContent,
+            tags: viewingNote.tags
+          });
+          loadNotes();
+        } catch (error) {
+          // Silent failure
+        }
+      };
+      
+      setTimeout(saveChanges, 200);
+    }
+  };
+
+  const createPanResponder = (messageId) => {
+    const slideAnim = getSlideAnimation(messageId);
+    const deleteThreshold = width * 0.4; // 40% of screen width
+    let isDeleting = false;
+    
+    return PanResponder.create({
+      onMoveShouldSetPanResponder: (evt, gestureState) => {
+        // Only respond if this message is highlighted and gesture is primarily horizontal
+        return highlightedMessageId === messageId && 
+               Math.abs(gestureState.dx) > Math.abs(gestureState.dy) && 
+               Math.abs(gestureState.dx) > 10;
+      },
+      onPanResponderGrant: () => {
+        isDeleting = false;
+        isPanningRef.current = true;
+        slideAnim.setOffset(slideAnim._value);
+        slideAnim.setValue(0);
+      },
+      onPanResponderMove: (evt, gestureState) => {
+        // Only allow left swipe (negative dx)
+        if (gestureState.dx < 0 && !isDeleting) {
+          slideAnim.setValue(gestureState.dx);
+          
+          // Check if we've reached the 40% threshold
+          if (Math.abs(gestureState.dx) >= deleteThreshold) {
+            isDeleting = true;
+            // Auto-complete the slide and delete
+            slideAnim.flattenOffset();
+            Animated.timing(slideAnim, {
+              toValue: -width, // Slide completely off screen
+              duration: 200,
+              useNativeDriver: true,
+            }).start(() => {
+              // Use setTimeout to avoid React warnings
+              setTimeout(() => deleteMessage(messageId), 0);
+            });
+          }
+        }
+      },
+      onPanResponderRelease: (evt, gestureState) => {
+        isPanningRef.current = false;
+        
+        if (!isDeleting) {
+          slideAnim.flattenOffset();
+          
+          // If we haven't reached the threshold, animate back to original position
+          if (Math.abs(gestureState.dx) < deleteThreshold) {
+            Animated.spring(slideAnim, {
+              toValue: 0,
+              useNativeDriver: true,
+            }).start();
+          }
+        }
+      },
+    });
+  };
+
+
 
   // Helper function to parse content into chat editor paragraphs
   const parseContentToParagraphs = (content) => {
@@ -632,185 +789,16 @@ export default function NotesScreen() {
   };
 
   // Helper function to check if selected text has formatting
-  const getSelectionFormatting = () => {
-    if (selectionStart === selectionEnd) {
-      return { bold: isBold, italic: isItalic, underline: isUnderline };
-    }
+  // Format last saved time
+  const formatLastSaved = () => {
+    if (!lastSaved) return '';
+    const now = new Date();
+    const diff = now - lastSaved;
     
-    const selectedText = noteContent.substring(selectionStart, selectionEnd);
-    return {
-      bold: selectedText.startsWith('**') && selectedText.endsWith('**'),
-      italic: selectedText.startsWith('*') && selectedText.endsWith('*') && !selectedText.startsWith('**') && !selectedText.endsWith('***'),
-      underline: selectedText.startsWith('__') && selectedText.endsWith('__')
-    };
-  };
-
-  const currentFormatting = getSelectionFormatting();
-
-  // Function to parse and render markdown text
-  const parseMarkdownText = (text) => {
-    if (!text) return [];
-
-    // First, let's escape and replace markdown patterns step by step
-    let workingText = text;
-    const parts = [];
-    let currentIndex = 0;
-    
-    // Find all formatting patterns with their positions
-    const allMatches = [];
-    
-    // Find bold patterns (**text**)
-    const boldRegex = /\*\*(.*?)\*\*/g;
-    let match;
-    while ((match = boldRegex.exec(text)) !== null) {
-      allMatches.push({
-        start: match.index,
-        end: match.index + match[0].length,
-        content: match[1],
-        style: { fontWeight: 'bold' },
-        type: 'bold',
-        priority: 1
-      });
-    }
-    
-    // Find underline patterns (__text__)
-    const underlineRegex = /__(.*?)__/g;
-    while ((match = underlineRegex.exec(text)) !== null) {
-      allMatches.push({
-        start: match.index,
-        end: match.index + match[0].length,
-        content: match[1],
-        style: { textDecorationLine: 'underline' },
-        type: 'underline',
-        priority: 2
-      });
-    }
-    
-    // Find italic patterns (*text*) - but exclude those inside bold patterns
-    const italicRegex = /(?<!\*)\*([^*\n]+?)\*(?!\*)/g;
-    // Since React Native doesn't support lookbehind, let's manually check
-    let textForItalics = text;
-    let italicMatch;
-    let searchIndex = 0;
-    
-    while (searchIndex < textForItalics.length) {
-      const remainingText = textForItalics.substring(searchIndex);
-      const italicRegexSimple = /\*([^*\n]+?)\*/;
-      italicMatch = remainingText.match(italicRegexSimple);
-      
-      if (italicMatch) {
-        const actualIndex = searchIndex + italicMatch.index;
-        const matchEnd = actualIndex + italicMatch[0].length;
-        
-        // Check if this is not part of a bold pattern
-        const prevChar = actualIndex > 0 ? text[actualIndex - 1] : '';
-        const nextChar = matchEnd < text.length ? text[matchEnd] : '';
-        
-        if (prevChar !== '*' && nextChar !== '*') {
-          // Also check if this doesn't overlap with existing bold/underline
-          const overlaps = allMatches.some(existing => 
-            actualIndex < existing.end && matchEnd > existing.start
-          );
-          
-          if (!overlaps) {
-            allMatches.push({
-              start: actualIndex,
-              end: matchEnd,
-              content: italicMatch[1],
-              style: { fontStyle: 'italic' },
-              type: 'italic',
-              priority: 3
-            });
-          }
-        }
-        
-        searchIndex = actualIndex + 1;
-      } else {
-        break;
-      }
-    }
-
-    // Sort by start position, then by priority (bold > underline > italic)
-    allMatches.sort((a, b) => {
-      if (a.start !== b.start) return a.start - b.start;
-      return a.priority - b.priority;
-    });
-
-    // Remove overlapping matches (keep higher priority ones)
-    const finalMatches = [];
-    for (let i = 0; i < allMatches.length; i++) {
-      const current = allMatches[i];
-      const overlaps = finalMatches.some(existing => 
-        current.start < existing.end && current.end > existing.start
-      );
-      
-      if (!overlaps) {
-        finalMatches.push(current);
-      }
-    }
-
-    // Build the parts array
-    currentIndex = 0;
-    finalMatches.forEach((range, index) => {
-      // Add text before this range
-      if (range.start > currentIndex) {
-        const beforeText = text.substring(currentIndex, range.start);
-        if (beforeText) {
-          parts.push({
-            text: beforeText,
-            style: {},
-            key: `text-${index}-before`
-          });
-        }
-      }
-      
-      // Add the formatted text
-      parts.push({
-        text: range.content,
-        style: range.style,
-        key: `formatted-${index}-${range.type}`
-      });
-      
-      currentIndex = range.end;
-    });
-
-    // Add any remaining text
-    if (currentIndex < text.length) {
-      const remainingText = text.substring(currentIndex);
-      if (remainingText) {
-        parts.push({
-          text: remainingText,
-          style: {},
-          key: `text-remaining`
-        });
-      }
-    }
-
-    // If no formatting was found, return the original text
-    if (parts.length === 0) {
-      parts.push({
-        text: text,
-        style: {},
-        key: 'original-text'
-      });
-    }
-
-    return parts;
-  };
-
-  // Component to render formatted text
-  const FormattedTextRenderer = ({ text, style, isChat = false }) => {
-    const parts = parseMarkdownText(text);
-    
-    return (
-      <Text style={isChat ? style : [styles.contentInput, style]}>
-        {parts.map((part) => (
-          <Text key={part.key} style={part.style}>
-            {part.text}
-          </Text>
-        ))}
-      </Text>
-    );
+    if (diff < 1000) return 'Saved just now';
+    if (diff < 60000) return `Saved ${Math.floor(diff / 1000)}s ago`;
+    if (diff < 3600000) return `Saved ${Math.floor(diff / 60000)}m ago`;
+    return `Saved at ${lastSaved.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
   };
 
   return (
@@ -901,202 +889,60 @@ export default function NotesScreen() {
         <View style={styles.editorContainer}>
           <StatusBar barStyle="light-content" backgroundColor="#6366f1" />
           
-          {/* Scrollable Upper Section */}
-          <ScrollView 
-            ref={scrollViewRef}
-            style={[
-              styles.editorScrollView,
-              {
-                maxHeight: isKeyboardVisible 
-                  ? Math.max(200, height - keyboardHeight - 300) // Reserve more space for content editor
-                  : height - 350 // Reserve space for toolbar and content editor
-              }
-            ]}
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-          >
-            {/* Header */}
-            <View style={[styles.editorHeader, { paddingTop: insets.top }]}>
-              <View style={styles.editorHeaderContent}>
-                <TouchableOpacity 
-                  onPress={() => setCreateNoteModalVisible(false)} 
-                  style={styles.closeModalButton}
-                >
-                  <Ionicons name="arrow-back" size={24} color="#fff" />
-                </TouchableOpacity>
-                <Text style={styles.editorTitle}>{isEditMode ? 'Edit Note' : 'Create Note'}</Text>
-                <TouchableOpacity 
-                  onPress={createNote}
-                  style={styles.saveButton}
-                >
-                  <Text style={styles.saveButtonText}>{isEditMode ? 'Update' : 'Save'}</Text>
-                </TouchableOpacity>
+          
+          {/* Header */}
+            <View style={[styles.fullPageHeader, { paddingTop: insets.top }]}>
+              <View style={styles.fullPageHeaderContent}>
+              <TouchableOpacity 
+                  onPress={closeEditor} 
+                style={styles.closeModalButton}
+              >
+                <Ionicons name="arrow-back" size={24} color="#fff" />
+              </TouchableOpacity>
+                <View style={styles.headerTitleSection}>
+            <TextInput
+                    style={styles.headerTitleInput}
+              value={noteTitle}
+              onChangeText={setNoteTitle}
+              placeholder="Note title..."
+                    placeholderTextColor="#c7d2fe"
+              maxLength={100}
+            />
+                  {isEditMode && (
+                    <Text style={styles.autoSaveStatus}>
+                      {isSaving ? 'Saving...' : formatLastSaved()}
+                </Text>
+                  )}
               </View>
-            </View>
-
-            {/* Note Title */}
-            <View style={styles.titleSection}>
-              <TextInput
-                style={styles.titleInput}
-                value={noteTitle}
-                onChangeText={setNoteTitle}
-                placeholder="Note title..."
-                placeholderTextColor="#9ca3af"
-                maxLength={100}
-              />
-            </View>
-
-            {/* Tags & Priority Button */}
-            <View style={styles.tagsSection}>
               <TouchableOpacity 
-                style={styles.tagsButton}
-                onPress={() => setTagModalVisible(true)}
-              >
-                <View style={styles.tagsButtonContent}>
-                  <Ionicons name="pricetag-outline" size={20} color="#6366f1" />
-                  <Text style={styles.tagsButtonText}>
-                    {(noteTag1 || noteTag2) ? 
-                      `Tags: ${[noteTag1, noteTag2].filter(tag => tag).join(', ')} • ${notePriority}` : 
-                      `Add Tags & Priority • ${notePriority}`
-                    }
-                  </Text>
-                </View>
-                <Ionicons name="chevron-forward" size={20} color="#9ca3af" />
+                  onPress={isEditMode ? () => setTagModalVisible(true) : createNote}
+                  style={styles.headerActionButton}
+                >
+                  {isEditMode ? (
+                    <Ionicons name="ellipsis-vertical" size={24} color="#fff" />
+                  ) : (
+                    <Text style={styles.saveButtonText}>Save</Text>
+                  )}
               </TouchableOpacity>
-            </View>
-          </ScrollView>
-
-          {/* Fixed Formatting Toolbar */}
-          <View style={styles.toolbar}>
-            <Text style={styles.toolbarHint}>Select text and tap formatting buttons, or type **bold**, *italic*, __underline__. Formatting shows instantly!</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.toolbarContent}>
-              <TouchableOpacity 
-                style={[styles.toolbarButton, isBold && styles.toolbarButtonActive]}
-                onPress={() => applyFormatting('bold')}
-              >
-                <Ionicons name="text" size={20} color={isBold ? "#fff" : "#6366f1"} />
-                <Text style={[styles.toolbarButtonText, isBold && styles.toolbarButtonTextActive]}>B</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={[styles.toolbarButton, isItalic && styles.toolbarButtonActive]}
-                onPress={() => applyFormatting('italic')}
-              >
-                <Text style={[styles.toolbarButtonTextItalic, isItalic && styles.toolbarButtonTextActive]}>I</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={[styles.toolbarButton, isUnderline && styles.toolbarButtonActive]}
-                onPress={() => applyFormatting('underline')}
-              >
-                <Text style={[styles.toolbarButtonTextUnderline, isUnderline && styles.toolbarButtonTextActive]}>U</Text>
-              </TouchableOpacity>
-              
-              <View style={styles.toolbarDivider} />
-              
-              <TouchableOpacity 
-                style={styles.toolbarButton}
-                onPress={() => applyFormatting('bullet')}
-              >
-                <Ionicons name="list" size={20} color="#6366f1" />
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={styles.toolbarButton}
-                onPress={() => applyFormatting('numbered')}
-              >
-                <Ionicons name="list-outline" size={20} color="#6366f1" />
-              </TouchableOpacity>
-              
-              <View style={styles.toolbarDivider} />
-              
-              <TouchableOpacity 
-                style={[styles.toolbarButton, textAlign === 'left' && styles.toolbarButtonActive]}
-                onPress={() => setAlignment('left')}
-              >
-                <Ionicons name="chevron-back" size={20} color={textAlign === 'left' ? "#fff" : "#6366f1"} />
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={[styles.toolbarButton, textAlign === 'center' && styles.toolbarButtonActive]}
-                onPress={() => setAlignment('center')}
-              >
-                <Ionicons name="remove" size={20} color={textAlign === 'center' ? "#fff" : "#6366f1"} />
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={[styles.toolbarButton, textAlign === 'right' && styles.toolbarButtonActive]}
-                onPress={() => setAlignment('right')}
-              >
-                <Ionicons name="chevron-forward" size={20} color={textAlign === 'right' ? "#fff" : "#6366f1"} />
-              </TouchableOpacity>
-            </ScrollView>
+              </View>
           </View>
 
-          {/* Content Editor - Takes remaining space */}
-          <View style={[
-            styles.editorContent,
-            {
-              flex: 1,
-              minHeight: isKeyboardVisible ? 150 : 200, // Ensure minimum usable height
-            }
-          ]}>
-            {isEditingContent ? (
+          {/* Full Page Content Editor */}
               <TextInput
-                style={[
-                  styles.contentInput,
-                  {
-                    textAlign: textAlign,
-                    flex: 1,
-                    minHeight: isKeyboardVisible ? 150 : 200, // Ensure text input has minimum height
-                  }
-                ]}
+            style={styles.fullPageEditor}
                 value={noteContent}
                 onChangeText={setNoteContent}
-                onSelectionChange={(event) => {
-                  const { start, end } = event.nativeEvent.selection;
-                  setSelectionStart(start);
-                  setSelectionEnd(end);
-                }}
-                onFocus={() => {
-                  // Scroll to bottom when content editor gets focus
-                  setTimeout(() => {
-                    scrollViewRef.current?.scrollToEnd({ animated: true });
-                  }, 100);
-                }}
-                onBlur={() => setIsEditingContent(false)}
-                placeholder="Start writing your note... (Use **bold**, *italic*, __underline__)"
+            placeholder="Start writing your note..."
                 placeholderTextColor="#9ca3af"
                 multiline
                 textAlignVertical="top"
                 ref={contentInputRef}
                 autoFocus
               />
-            ) : (
-              <TouchableOpacity 
-                style={styles.formattedTextContainer}
-                onPress={() => setIsEditingContent(true)}
-                activeOpacity={0.7}
-              >
-                {noteContent ? (
-                  <FormattedTextRenderer 
-                    text={noteContent} 
-                    style={[styles.contentInput, { textAlign: textAlign }]}
-                  />
-                ) : (
-                  <Text style={styles.placeholderText}>
-                    Tap to start writing...{'\n\n'}Try: **bold text**, *italic text*, __underlined text__
-                  </Text>
-                )}
-                <View style={styles.editHint}>
-                  <Ionicons name="create-outline" size={20} color="#9ca3af" />
-                  <Text style={styles.editHintText}>Tap to edit</Text>
                 </View>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
       </Modal>
+
+
 
       {/* Tags & Priority Modal */}
       <Modal
@@ -1223,16 +1069,12 @@ export default function NotesScreen() {
                   {viewingNote?.title}
                 </Text>
                 <Text style={styles.chatSubtitle}>
-                  {isReaderMode ? 'Reader Mode' : `${parseContentToParagraphs(viewingNote?.content || '').length} messages`}
+                  {viewMode === 'reader' ? 'Reader Mode' : 
+                   `${viewingNote?.content ? viewingNote.content.split(' ').length : 0} words`}
                 </Text>
               </View>
               
-              <TouchableOpacity 
-                onPress={handleEditFromViewer}
-                style={styles.editFromViewerButton}
-              >
-                <Ionicons name="pencil" size={20} color="#fff" />
-              </TouchableOpacity>
+              <View style={styles.headerSpacer} />
             </View>
           </View>
 
@@ -1240,29 +1082,43 @@ export default function NotesScreen() {
           <View style={styles.modeToggleContainer}>
             <View style={styles.toggleSwitchContainer}>
               <TouchableOpacity 
-                style={[styles.toggleOption, isReaderMode && styles.toggleOptionActive]}
-                onPress={() => setIsReaderMode(true)}
+                style={[styles.toggleOption, viewMode === 'reader' && styles.toggleOptionActive]}
+                onPress={() => setViewMode('reader')}
               >
                 <Ionicons 
                   name="document-text-outline" 
                   size={16} 
-                  color={isReaderMode ? "#fff" : "#6366f1"} 
+                  color={viewMode === 'reader' ? "#fff" : "#6366f1"} 
                 />
-                <Text style={[styles.toggleText, isReaderMode && styles.toggleTextActive]}>
+                <Text style={[styles.toggleText, viewMode === 'reader' && styles.toggleTextActive]}>
                   Reader
                 </Text>
               </TouchableOpacity>
               
               <TouchableOpacity 
-                style={[styles.toggleOption, !isReaderMode && styles.toggleOptionActive]}
-                onPress={() => setIsReaderMode(false)}
+                style={[styles.toggleOption]}
+                onPress={handleEditFromViewer}
+              >
+                <Ionicons 
+                  name="create-outline" 
+                  size={16} 
+                  color="#6366f1" 
+                />
+                <Text style={[styles.toggleText]}>
+                  Editor
+                </Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={[styles.toggleOption, viewMode === 'chat' && styles.toggleOptionActive]}
+                onPress={() => setViewMode('chat')}
               >
                 <Ionicons 
                   name="chatbubble-outline" 
                   size={16} 
-                  color={!isReaderMode ? "#fff" : "#6366f1"} 
+                  color={viewMode === 'chat' ? "#fff" : "#6366f1"} 
                 />
-                <Text style={[styles.toggleText, !isReaderMode && styles.toggleTextActive]}>
+                <Text style={[styles.toggleText, viewMode === 'chat' && styles.toggleTextActive]}>
                   Chat Editor
                 </Text>
               </TouchableOpacity>
@@ -1270,7 +1126,7 @@ export default function NotesScreen() {
           </View>
 
           {/* Reader Mode View */}
-          {isReaderMode ? (
+          {viewMode === 'reader' && (
             <ScrollView style={styles.readerContent} contentContainerStyle={styles.readerContentContainer}>
               <View style={styles.readerTitleSection}>
                 <Text style={styles.readerNoteTitle}>
@@ -1282,35 +1138,111 @@ export default function NotesScreen() {
               </View>
               
               <View style={styles.readerTextSection}>
-                <FormattedTextRenderer 
-                  text={viewingNote?.content || 'No content available'} 
-                  style={styles.readerNoteContent}
-                />
+                <Text style={styles.readerNoteContent}>
+                  {viewingNote?.content || 'No content available'}
+                </Text>
               </View>
             </ScrollView>
-          ) : (
-            /* Chat Editor Mode View */
+          )}
+
+                    {/* Chat Editor Mode View */}
+          {viewMode === 'chat' && (
             <>
-              <FlatList
-                style={styles.chatMessages}
-                data={parseContentToParagraphs(viewingNote?.content || '')}
-                keyExtractor={(item) => item.id}
-                renderItem={({ item, index }) => (
-                  <View style={styles.messageContainer}>
-                    <View style={styles.messageBubble}>
-                      <FormattedTextRenderer 
-                        text={item.text} 
-                        style={styles.messageText}
-                        isChat={true}
-                      />
-                      <Text style={styles.messageTime}>
-                        {formatMessageTime(item.timestamp)}
-                      </Text>
+              <TouchableWithoutFeedback onPress={clearSelection}>
+                <View style={{ flex: 1 }}>
+                  <FlatList
+                    style={styles.chatMessages}
+                    data={parseContentToParagraphs(viewingNote?.content || '').reverse()}
+                    keyExtractor={(item) => item.id}
+                    renderItem={({ item, index }) => (
+                  highlightedMessageId === item.id ? (
+                    // HIGHLIGHTED MODE - Full delete functionality
+                    <View style={[styles.messageContainer, styles.messageContainerHighlighted]}>
+                      {/* Delete indicator */}
+                      <View style={styles.deleteIndicator}>
+                        <Ionicons name="arrow-forward" size={16} color="#ef4444" />
+                        <Ionicons name="trash" size={16} color="#ef4444" />
+                        <Text style={styles.deleteIndicatorText}>Swipe left to delete</Text>
+                      </View>
+                      
+                      <Animated.View 
+                        style={[
+                          styles.slidableMessageWrapper,
+                          {
+                            transform: [{ translateX: getSlideAnimation(item.id) }]
+                          }
+                        ]}
+                        {...createPanResponder(item.id).panHandlers}
+                      >
+                        <TouchableOpacity 
+                          style={[styles.messageBubble, styles.messageBubbleHighlighted]}
+                          onPressOut={handlePressOut}
+                          activeOpacity={0.7}
+                        >
+                          {editingMessageId === item.id ? (
+                            <TextInput
+                              style={styles.messageTextInput}
+                              value={editingMessageText}
+                              onChangeText={setEditingMessageText}
+                              multiline
+                              autoFocus
+                              onBlur={finishEditingMessage}
+                              onSubmitEditing={finishEditingMessage}
+                              selectionColor="rgba(255, 255, 255, 0.8)"
+                            />
+                          ) : (
+                            <Text style={styles.messageText}>
+                              {item.text}
+                            </Text>
+                          )}
+                          <TouchableOpacity 
+                            style={styles.messagePencilIcon}
+                            onPress={() => startEditingMessage(item.id, item.text)}
+                          >
+                            <Ionicons name="pencil" size={12} color="rgba(255, 255, 255, 0.8)" />
+                          </TouchableOpacity>
+                        </TouchableOpacity>
+                      </Animated.View>
                     </View>
-                  </View>
+                  ) : (
+                    // NORMAL MODE - Simple original layout
+                    <View style={styles.messageContainer}>
+                      <TouchableOpacity 
+                        style={styles.messageBubble}
+                        onLongPress={() => handleLongPressMessage(item.id)}
+                        onPressOut={handlePressOut}
+                        delayLongPress={300}
+                        activeOpacity={0.7}
+                      >
+                        {editingMessageId === item.id ? (
+                          <TextInput
+                            style={styles.messageTextInput}
+                            value={editingMessageText}
+                            onChangeText={setEditingMessageText}
+                            multiline
+                            autoFocus
+                            onBlur={finishEditingMessage}
+                            onSubmitEditing={finishEditingMessage}
+                            selectionColor="rgba(255, 255, 255, 0.8)"
+                          />
+                        ) : (
+                          <Text style={styles.messageText}>
+                            {item.text}
+                          </Text>
+                        )}
+                        <TouchableOpacity 
+                          style={styles.messagePencilIcon}
+                          onPress={() => startEditingMessage(item.id, item.text)}
+                        >
+                          <Ionicons name="pencil" size={12} color="rgba(255, 255, 255, 0.8)" />
+                        </TouchableOpacity>
+                      </TouchableOpacity>
+                    </View>
+                  )
                 )}
                 contentContainerStyle={styles.chatMessagesContent}
                 showsVerticalScrollIndicator={false}
+                inverted={true}
                 ListEmptyComponent={() => (
                   <View style={styles.emptyChat}>
                     <Ionicons name="chatbubble-outline" size={64} color="#9ca3af" />
@@ -1319,6 +1251,8 @@ export default function NotesScreen() {
                   </View>
                 )}
               />
+                </View>
+              </TouchableWithoutFeedback>
 
               {/* Chat Editor Input - Only show in chat editor mode */}
               <View style={styles.chatInputContainer}>
@@ -1327,10 +1261,13 @@ export default function NotesScreen() {
                     style={styles.chatInput}
                     value={newMessage}
                     onChangeText={setNewMessage}
-                    placeholder="Type a message in chat editor..."
+                    placeholder="Type your notes here..."
                     placeholderTextColor="#9ca3af"
-                    multiline
+                    multiline={false}
                     maxLength={500}
+                    onSubmitEditing={sendMessage}
+                    blurOnSubmit={false}
+                    returnKeyType="send"
                   />
                   <TouchableOpacity 
                     style={[
@@ -1898,6 +1835,40 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     alignItems: 'flex-end',
   },
+  messageContainerHighlighted: {
+    zIndex: 999,
+    elevation: 20,
+  },
+  slidableMessageWrapper: {
+    alignItems: 'flex-end',
+  },
+  deleteIndicator: {
+    position: 'absolute',
+    left: 0,
+    top: '50%',
+    transform: [{ translateY: -12 }],
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+    zIndex: 1000,
+  },
+  deleteIndicatorText: {
+    fontSize: 12,
+    color: '#ef4444',
+    fontWeight: '500',
+    marginLeft: 6,
+  },
   messageBubble: {
     backgroundColor: '#6366f1',
     borderRadius: 18,
@@ -1912,16 +1883,40 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 2,
     elevation: 3,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  messageBubbleHighlighted: {
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 6,
+    },
+    shadowOpacity: 0.8,
+    shadowRadius: 12,
+    elevation: 15,
+    transform: [{ scale: 1.05 }],
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
   },
   messageText: {
     fontSize: 16,
     color: '#fff',
     lineHeight: 20,
+    flex: 1,
+    marginRight: 8,
   },
-  messageTime: {
-    fontSize: 11,
-    color: 'rgba(255, 255, 255, 0.8)',
-    textAlign: 'right',
+  messageTextInput: {
+    fontSize: 16,
+    color: '#fff',
+    lineHeight: 20,
+    flex: 1,
+    marginRight: 8,
+    minHeight: 20,
+  },
+  messagePencilIcon: {
+    alignSelf: 'flex-end',
+    padding: 4,
     marginTop: 4,
   },
   chatInputContainer: {
@@ -1994,10 +1989,10 @@ const styles = StyleSheet.create({
   toggleOption: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 20,
-    minWidth: 80,
+    minWidth: 70,
     justifyContent: 'center',
   },
   toggleOptionActive: {
@@ -2200,6 +2195,58 @@ const styles = StyleSheet.create({
     color: '#374151',
     marginLeft: 8,
     fontWeight: '500',
+  },
+  
+  // Full Page Editor Styles
+  fullPageHeader: {
+    backgroundColor: '#6366f1',
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+  },
+  fullPageHeaderContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  headerTitleSection: {
+    flex: 1,
+    alignItems: 'center',
+    paddingHorizontal: 16,
+  },
+  headerTitleInput: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#fff',
+    textAlign: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    minWidth: 200,
+  },
+  autoSaveStatus: {
+    fontSize: 11,
+    color: '#c7d2fe',
+    marginTop: 4,
+    fontStyle: 'italic',
+  },
+  headerActionButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    minWidth: 60,
+    alignItems: 'center',
+  },
+  fullPageEditor: {
+    flex: 1,
+    fontSize: 16,
+    color: '#1f2937',
+    lineHeight: 24,
+    padding: 20,
+    textAlignVertical: 'top',
+    backgroundColor: '#fff',
   },
   // Tags Modal Styles
   tagModalContainer: {
